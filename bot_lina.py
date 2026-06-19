@@ -101,9 +101,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         bot_reply = response.content[0].text
-
         conversations[user_id].append({"role": "assistant", "content": bot_reply})
-
         await update.message.reply_text(bot_reply)
 
         msg_lower = user_message.lower()
@@ -116,12 +114,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Erreur API: {e}")
         await update.message.reply_text("Je reviens dans 2 min 😊")
 
-async def main():
+def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot démarré !")
-    await app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
