@@ -2,13 +2,14 @@ import os
 import logging
 import anthropic
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+ADMIN_ID = int(os.environ["ADMIN_ID"])  # Ton ID Telegram personnel
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -78,11 +79,32 @@ LOGIQUE :
 6. Contenu personnalisé → demander ce qu'il veut, donner le prix selon la demande
 7. Sexchat → confirmer disponibilité, demander quand il veut"""
 
+# Stockage conversations et mode
 conversations = {}
+mode_humain = set()  # IDs des clients gérés manuellement par l'admin
+
+async def notifier_admin(context, user_id, username, message, reponse_bot=None):
+    """Envoie une notification à l'admin avec le message du client"""
+    username_str = f"@{username}" if username else f"ID:{user_id}"
+    texte = f"💬 *Nouveau message*\nClient: {username_str} (`{user_id}`)\n\n*Client:* {message}"
+    if reponse_bot:
+        texte += f"\n\n*Bot:* {reponse_bot}"
+    texte += f"\n\n➡️ Prendre la main: `/humain {user_id}`"
+    await context.bot.send_message(chat_id=ADMIN_ID, text=texte, parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    username = update.effective_user.username
     user_message = update.message.text
+
+    # Ignorer les messages de l'admin au bot
+    if user_id == ADMIN_ID:
+        return
+
+    # Mode humain — notifier l'admin sans répondre automatiquement
+    if user_id in mode_humain:
+        await notifier_admin(context, user_id, username, user_message)
+        return
 
     if user_id not in conversations:
         conversations[user_id] = []
@@ -104,19 +126,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conversations[user_id].append({"role": "assistant", "content": bot_reply})
         await update.message.reply_text(bot_reply)
 
+        # Envoyer infos paiement si nécessaire
         msg_lower = user_message.lower()
         for keyword, info in PAIEMENTS.items():
             if keyword in msg_lower:
                 await update.message.reply_text(info)
                 break
 
+        # Notifier l'admin
+        await notifier_admin(context, user_id, username, user_message, bot_reply)
+
     except Exception as e:
         logger.error(f"Erreur API: {e}")
         await update.message.reply_text("Je reviens dans 2 min 😊")
 
+async def cmd_humain(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin prend la main sur une conversation"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /humain [user_id]")
+        return
+    client_id = int(context.args[0])
+    mode_humain.add(client_id)
+    await update.message.reply_text(f"✅ Mode humain activé pour `{client_id}`\nTu gères cette conv manuellement.\nPour repasser en auto: `/auto {client_id}`", parse_mode="Markdown")
+
+async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Repasser en mode automatique"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /auto [user_id]")
+        return
+    client_id = int(context.args[0])
+    mode_humain.discard(client_id)
+    await update.message.reply_text(f"✅ Mode auto réactivé pour `{client_id}`", parse_mode="Markdown")
+
+async def cmd_repondre(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin envoie un message à un client via le bot"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /rep [user_id] [message]")
+        return
+    client_id = int(context.args[0])
+    message = " ".join(context.args[1:])
+    await context.bot.send_message(chat_id=client_id, text=message)
+    await update.message.reply_text(f"✅ Message envoyé à `{client_id}`", parse_mode="Markdown")
+
+async def cmd_statut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Voir les conversations actives"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    total = len(conversations)
+    humains = len(mode_humain)
+    await update.message.reply_text(f"📊 *Statut du bot*\n\nConversations actives: {total}\nMode humain: {humains}\nMode auto: {total - humains}", parse_mode="Markdown")
+
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("humain", cmd_humain))
+    app.add_handler(CommandHandler("auto", cmd_auto))
+    app.add_handler(CommandHandler("rep", cmd_repondre))
+    app.add_handler(CommandHandler("statut", cmd_statut))
     logger.info("Bot démarré !")
     app.run_polling(drop_pending_updates=True)
 
